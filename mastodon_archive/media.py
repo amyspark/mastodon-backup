@@ -39,22 +39,27 @@ def media(args):
     data = core.load(status_file, required=True, quiet=True, combine=args.combine)
 
     urls = []
+    fallback_urls = {}
     preview_urls_count=0
     for status in data[args.collection]:
+        id = status["id"]
         attachments = status["media_attachments"]
         if status["reblog"] is not None:
             attachments = status["reblog"]["media_attachments"]
         for attachment in attachments:
-                if attachment["preview_url"]:
-                        urls.append(attachment["preview_url"])
-                        preview_urls_count += 1
-                if attachment["url"]:
-                        urls.append(attachment["url"])
+            if attachment["preview_url"]:
+                urls.append(attachment["preview_url"])
+                fallback_urls[attachment["preview_url"]] = attachment["remote_url"] 
+                preview_urls_count += 1
+            if attachment["url"]:
+                urls.append(attachment["url"])
+                fallback_urls[attachment["url"]] = attachment["remote_url"] 
 
     # these two are always available; if the user didn't set it, will link to a
     # placeholder image
     for picture in ["avatar", "header"]:
         urls.append(data["account"][picture])
+        fallback_urls[data["account"][picture]] = data["account"][picture]
 
     print("%d urls in your backup (%d are previews)" % (len(urls), preview_urls_count))
 
@@ -64,25 +69,39 @@ def media(args):
 
     # start downloading the missing files from the back
     for url in reversed(urls):
+        if fallback_urls[url]:
+            remote_path = urlparse(fallback_urls[url]).path
+            remote_file_name = media_dir + remote_path
         bar.next()
         path = urlparse(url).path
         file_name = media_dir + path
-        if not os.path.isfile(file_name):
+        if not os.path.isfile(file_name) and not os.path.isfile(remote_file_name):
             dir_name =  os.path.dirname(file_name)
             os.makedirs(dir_name, exist_ok = True)
             try:
                 req = urllib.request.Request(
                     url, data=None,
                     headers={'User-Agent': 'Mastodon-Archive/1.3 '
-                             '(+https://github.com/kensanata/mastodon-backup#mastodon-archive)'})
+                            '(+https://github.com/kensanata/mastodon-backup#mastodon-archive)'})
                 try:
-                  with urllib.request.urlopen(req) as response, open(file_name, 'wb') as fp:
-                    data = response.read()
-                    fp.write(data)
-                except HTTPError as he:
-                  print("\nFailed to open " + url + " during a media request.")
-                except URLError as ue:
-                  print("\nFailed to open " + url + " during a media request.")
+                    with urllib.request.urlopen(req) as response, open(file_name, 'wb') as fp:
+                        data = response.read()
+                        fp.write(data)
+                except (HTTPError, URLError):
+                    print("\nFailed to open " + url + " during a media request. Falling back to remote URL.")
+                    if fallback_urls[url]:
+                        remote_dir_name =  os.path.dirname(remote_file_name)
+                        os.makedirs(remote_dir_name, exist_ok = True)
+                        fallback_req = urllib.request.Request(
+                            fallback_urls[url], data=None,
+                        headers={'User-Agent': 'Mastodon-Archive/1.3 '
+                                '(+https://github.com/kensanata/mastodon-backup#mastodon-archive)'})
+                        try:
+                            with urllib.request.urlopen(fallback_req) as response, open(remote_file_name, 'wb') as fp:
+                                data = response.read()
+                                fp.write(data)
+                        except (HTTPError, URLError):
+                            print("\nFailed to open fallback " + fallback_urls[url] + " during a media request.")
             except OSError as e:
                 print("\n" + e.msg + ": " + url, file=sys.stderr)
                 errors += 1
